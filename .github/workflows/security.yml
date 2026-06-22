@@ -1,0 +1,47 @@
+name: security
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+  pull-requests: write   # PRコメント投稿に必要
+
+jobs:
+  sbom-scan-triage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install tools (free OSS, PyPI only)
+        run: pip install cyclonedx-bom pip-audit
+
+      # 1) SBOM生成 (CycloneDX)
+      - name: Generate SBOM
+        run: cyclonedx-py requirements requirements.txt > sbom.cdx.json
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sbom-${{ github.sha }}
+          path: sbom.cdx.json
+          retention-days: 90
+
+      # 2) 脆弱性スキャン（検出では落とさない）
+      - name: Vulnerability scan
+        run: pip-audit -r requirements.txt -f json -o findings.json --progress-spinner off || true
+
+      # 3) KEV/CVSS/EPSSで優先度付け（新規P0/P1があればここで落ちる）
+      - name: Prioritize & triage
+        run: python tools/triage.py findings.json > triage.md
+
+      # 4) 結果をPRにコメント
+      - name: Comment on PR
+        if: github.event_name == 'pull_request' && always()
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          path: triage.md
